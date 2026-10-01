@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Find a time that works for everyone. Create a meeting, share the link, and see the best common slots.">
+<title>Common Time Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>body { margin: 0; } [hidden] { display: none !important; }</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <button class="brand" id="home" type="button" aria-label="All meetings">
+      <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <h1>Common Time Finder</h1>
+    </button>
+    <div class="who" id="who"></div>
+  </div>
+  <main id="main"><div class="panel"><p class="muted">Loading…</p></div></main>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

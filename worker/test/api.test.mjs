@@ -146,3 +146,13 @@ test("auth: email fallback for name and JWKS caching", async () => {
   assert.equal(got.body.availability[0].name, "e@x.io");
   assert.ok(jwksCalls.n - before <= 1);
 });
+
+test("impossible calendar dates are dropped", async () => {
+  const env = makeEnv();
+  const bad = await call(env, "POST", "/api/meetings", { body: meetingBody({ dates: ["2026-13-45", "2026-02-31", "0000-00-00"] }) });
+  assert.equal(bad.status, 400);
+  const ok = await call(env, "POST", "/api/meetings", { body: meetingBody({ dates: ["2026-02-31", "2028-02-29", 20261001] }) });
+  assert.equal(ok.status, 201);
+  const { meeting } = (await call(env, "GET", `/api/meetings/${ok.body.id}`)).body;
+  assert.deepEqual(meeting.dates, ["2028-02-29"]);
+});

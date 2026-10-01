@@ -61,7 +61,7 @@ async function listMeetings(db, uid) {
 async function createMeeting(db, user, b) {
   const title = str(b.title, 80);
   if (!title) throw new BadRequest("Give the meeting a name.");
-  const dates = Array.isArray(b.dates) ? [...new Set(b.dates)].filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort() : [];
+  const dates = Array.isArray(b.dates) ? [...new Set(b.dates)].filter(isRealDate).sort() : [];
   if (!dates.length || dates.length > MAX_DATES) throw new BadRequest(`Pick between 1 and ${MAX_DATES} dates.`);
   const start = int(b.startMin), end = int(b.endMin);
   if (start == null || end == null || start < 0 || end > 1440 || end <= start || start % 30 || end % 30)
@@ -110,6 +110,11 @@ async function deleteMeeting(db, id, uid, json) {
 
 // ---------- helpers ----------
 const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+const isRealDate = d => {
+  if (typeof d !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const t = new Date(d + "T00:00:00Z");
+  return !isNaN(t) && t.toISOString().slice(0, 10) === d;
+};
 const int = v => (Number.isInteger(v) ? v : null);
 function newId() {
   const b = crypto.getRandomValues(new Uint8Array(12));

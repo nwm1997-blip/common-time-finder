@@ -129,6 +129,9 @@ test("auth: rejects missing, malformed and invalid tokens", async () => {
   assert.equal(await status(await token({ sub: "" })), 401);
   assert.equal(await status(await token({ exp: Math.floor(Date.now() / 1000) - 3600 })), 401);
   assert.equal(await status(await token({ iat: Math.floor(Date.now() / 1000) + 3600 })), 401);
+  assert.equal(await status(await token({ exp: undefined })), 401);
+  assert.equal(await status(await token({ iat: undefined })), 401);
+  assert.equal(await status(await token({ sub: 123 })), 401);
   assert.equal(await status(await token({}, { head: { alg: "none" } })), 401);
   assert.equal(await status(await token({}, { head: { kid: "unknown" } })), 401);
   const other = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"]);

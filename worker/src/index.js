@@ -148,7 +148,8 @@ async function verifyToken(header, projectId) {
   if (head.alg !== "RS256" || !head.kid) return null;
   const now = Math.floor(Date.now() / 1000);
   if (claims.aud !== projectId || claims.iss !== `https://securetoken.google.com/${projectId}`) return null;
-  if (!claims.sub || claims.exp < now - 30 || claims.iat > now + 300) return null;
+  if (typeof claims.sub !== "string" || !claims.sub) return null;
+  if (!Number.isFinite(claims.exp) || !Number.isFinite(claims.iat) || claims.exp < now - 30 || claims.iat > now + 300) return null;
 
   const jwk = (await getKeys()).find(k => k.kid === head.kid);
   if (!jwk) return null;

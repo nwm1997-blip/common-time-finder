@@ -1,0 +1,12 @@
+name = "common-time-finder-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+FIREBASE_PROJECT_ID = "common-time-finder"
+ALLOWED_ORIGINS = "https://nwm1997-blip.github.io,http://localhost:8080,http://127.0.0.1:8080"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "common-time-finder"
+database_id = "4a485ea4-192a-47c2-be8f-a8db15928f4a"

@@ -1,4 +1,4 @@
-import { firebaseConfig } from "./firebase-config.js";
+import { firebaseConfig, apiBase } from "./firebase-config.js";
 
 const FB = "https://www.gstatic.com/firebasejs/10.14.1/";
 const SLOT = 30;
@@ -31,62 +31,81 @@ const S = {
   cur: null, curReady: false, avail: {},
   view: "list", current: null, sel: null, minLen: 60, saveState: "", painting: false,
 };
-let unsubMeetings = null, unsubCur = null, unsubAvail = null;
+let pollTimer = null;
+const POLL_MS = 12000;
 
 // ---------- routing ----------
 function routeFromHash() {
   const mid = (location.hash.match(/^#m-([A-Za-z0-9_-]+)$/) || [])[1];
   const view = mid ? "meeting" : location.hash === "#new" ? "new" : "list";
-  if (view === S.view && mid === (S.current || undefined)) return;
+  if (view === S.view && mid === (S.current || undefined) && S.loadedFor === S.user?.uid) return;
   S.view = view; S.current = mid || null; S.sel = null; S.saveState = "";
-  watchCurrent();
+  load();
   render(true); window.scrollTo(0, 0);
 }
 function go(view, mid) { location.hash = mid ? "m-" + mid : view === "new" ? "new" : ""; }
 window.addEventListener("hashchange", routeFromHash);
 $("home").addEventListener("click", () => go("list"));
 
-// ---------- firebase ----------
+// ---------- auth (Firebase) + data (Cloudflare D1 API) ----------
 async function boot() {
   try { const v = +localStorage.getItem("ctf-len"); if ([30, 60, 90, 120, 180].includes(v)) S.minLen = v; } catch (e) {}
-  if (!firebaseConfig) { renderSetup(); return; }
-  const [app, auth, fs] = await Promise.all([
-    import(FB + "firebase-app.js"), import(FB + "firebase-auth.js"), import(FB + "firebase-firestore.js"),
-  ]);
+  if (!firebaseConfig || !apiBase) { renderSetup(); return; }
+  const [app, auth] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-auth.js")]);
   const fapp = app.initializeApp(firebaseConfig);
-  S.fb = { auth: auth.getAuth(fapp), db: fs.getFirestore(fapp), A: auth, F: fs };
+  S.fb = { auth: auth.getAuth(fapp), A: auth };
   auth.getRedirectResult(S.fb.auth).catch(() => {});
   auth.onAuthStateChanged(S.fb.auth, u => {
-    S.user = u; S.authReady = true;
+    S.user = u; S.authReady = true; S.loadedFor = null;
     renderWho();
-    if (unsubMeetings) { unsubMeetings(); unsubMeetings = null; }
-    S.meetings = []; S.meetingsReady = false;
-    if (u) {
-      const q = fs.query(fs.collection(S.fb.db, "meetings"), fs.where("members", "array-contains", u.uid));
-      unsubMeetings = fs.onSnapshot(q, snap => {
-        S.meetings = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(validMeeting);
-        S.meetingsReady = true; render();
-      }, () => { S.meetingsReady = true; render(); });
-    }
-    routeFromHash(); watchCurrent(); render(true);
+    routeFromHash(); render(true);
   });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && S.view === "meeting") refreshMeeting(); });
 }
-const validMeeting = m => Array.isArray(m.dates) && m.dates.length && m.endMin > m.startMin;
 
-function watchCurrent() {
-  if (unsubCur) { unsubCur(); unsubCur = null; }
-  if (unsubAvail) { unsubAvail(); unsubAvail = null; }
-  S.cur = null; S.curReady = false; S.avail = {};
-  if (!S.fb || !S.user || S.view !== "meeting" || !S.current) return;
-  const { F, db } = S.fb, mid = S.current;
-  unsubCur = F.onSnapshot(F.doc(db, "meetings", mid), d => {
-    S.cur = d.exists() && validMeeting(d.data()) ? { id: d.id, ...d.data() } : null;
-    S.curReady = true; render();
-  }, () => { S.cur = null; S.curReady = true; render(); });
-  unsubAvail = F.onSnapshot(F.collection(db, "meetings", mid, "avail"), snap => {
-    const a = {}; snap.docs.forEach(d => { a[d.id] = d.data(); });
-    S.avail = a; render();
-  }, () => {});
+async function api(method, path, body) {
+  const token = await S.user.getIdToken();
+  const res = await fetch(apiBase + path, {
+    method,
+    headers: { Authorization: "Bearer " + token, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.error || "Request failed"); e.status = res.status; throw e; }
+  return data;
+}
+
+function load() {
+  clearInterval(pollTimer); pollTimer = null;
+  S.listError = false; S.loadError = false;
+  if (!S.user) return;
+  S.loadedFor = S.user.uid;
+  if (S.view === "list") {
+    S.meetingsReady = false;
+    api("GET", "/api/meetings").then(r => { S.meetings = r.meetings; }).catch(() => { S.listError = true; })
+      .finally(() => { S.meetingsReady = true; render(); });
+  } else if (S.view === "meeting") {
+    S.cur = null; S.curReady = false; S.avail = {};
+    refreshMeeting();
+    pollTimer = setInterval(() => { if (!document.hidden) refreshMeeting(); }, POLL_MS);
+  }
+}
+
+async function refreshMeeting() {
+  const mid = S.current;
+  if (!mid || !S.user || S.painting || S.saving) return;
+  try {
+    const r = await api("GET", "/api/meetings/" + mid);
+    if (mid !== S.current || S.painting || S.saving) return;
+    const a = {}; r.availability.forEach(x => { a[x.userId] = x; });
+    const changed = JSON.stringify([r.meeting, a]) !== JSON.stringify([S.cur, S.avail]);
+    S.cur = r.meeting; S.avail = a; S.curReady = true; S.loadError = false;
+    if (changed) render();
+  } catch (e) {
+    if (mid !== S.current) return;
+    if (e.status === 404) { S.cur = null; S.curReady = true; clearInterval(pollTimer); render(); }
+    else if (!S.curReady) { S.curReady = true; S.loadError = true; render(); }
+  }
 }
 
 async function signIn() {
@@ -99,6 +118,8 @@ async function signIn() {
       const err = $("signin-err");
       if (err) err.textContent = e.code === "auth/unauthorized-domain"
         ? `This site isn't on the Firebase authorised domains list yet. Add ${location.hostname} in Firebase → Authentication → Settings.`
+        : e.code === "auth/configuration-not-found" || e.code === "auth/operation-not-allowed"
+        ? "Google sign-in isn't switched on yet. Enable it in Firebase → Authentication → Sign-in method."
         : "Sign-in didn't work. Try again.";
     }
   }
@@ -111,20 +132,16 @@ const participants = () => Object.entries(S.avail).filter(([, v]) => v.slots?.le
 const nameOf = id => id === uid() ? "You" : (S.avail[id]?.name || "Someone");
 
 async function saveMine(set) {
-  const { F, db } = S.fb, m = S.cur;
-  S.saveState = "Saving…"; paintSaved();
+  const m = S.cur, slots = [...set].sort((a, b) => a - b);
+  S.avail = { ...S.avail, [uid()]: { userId: uid(), name: S.user.displayName || "", photo: S.user.photoURL || "", slots } };
+  S.saving = true; S.saveState = "Saving…"; paintSaved();
   try {
-    await F.setDoc(F.doc(db, "meetings", m.id, "avail", uid()), {
-      slots: [...set].sort((a, b) => a - b),
-      name: S.user.displayName || S.user.email || "",
-      photo: S.user.photoURL || "",
-      updatedAt: F.serverTimestamp(),
-    });
-    if (!(m.members || []).includes(uid())) await F.updateDoc(F.doc(db, "meetings", m.id), { members: F.arrayUnion(uid()) });
+    await api("PUT", `/api/meetings/${m.id}/availability`, { slots });
     S.saveState = "Saved";
   } catch (e) {
-    S.saveState = "Couldn't save. Check your connection and try again.";
+    S.saveState = e.status === 401 ? "Sign in again to save your times." : "Couldn't save. Check your connection and try again.";
   }
+  S.saving = false;
   paintSaved();
 }
 function paintSaved() { const el = $("saved"); if (el) el.textContent = S.saveState; }
@@ -157,7 +174,7 @@ function renderSetup() {
     h("ol", { class: "steps" },
       h("li", {}, "Create a free project at ", h("a", { href: "https://console.firebase.google.com/", target: "_blank", rel: "noopener" }, "console.firebase.google.com"), "."),
       h("li", {}, "Build → Authentication → Get started → enable ", h("b", {}, "Google"), ". Under Settings → Authorised domains, add ", h("code", {}, location.hostname || "your-site.github.io"), "."),
-      h("li", {}, "Build → Firestore Database → Create database, then paste ", h("code", {}, "firestore.rules"), " from the repo into the Rules tab and publish."),
+      h("li", {}, "Deploy the API in ", h("code", {}, "worker/"), " to Cloudflare (see README) and put its URL in ", h("code", {}, "apiBase"), " in firebase-config.js."),
       h("li", {}, "Project settings → Your apps → add a Web app, and copy its config into ", h("code", {}, "firebase-config.js"), "."))));
 }
 
@@ -173,11 +190,12 @@ function viewSignIn() {
 }
 
 function viewList() {
-  const list = [...S.meetings].sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  const list = [...S.meetings].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const head = h("div", { class: "mhead" },
     h("div", {}, h("h2", {}, "Your meetings"), h("p", { class: "muted small" }, "Meetings you created or added times to. Open one to update your times or see the results.")),
     h("button", { class: "btn primary", type: "button", onclick: () => go("new") }, "New meeting"));
   if (!S.meetingsReady) return h("div", { class: "panel" }, head, h("p", { class: "muted" }, "Loading meetings…"));
+  if (S.listError) return h("div", { class: "panel" }, head, h("p", { class: "err" }, "Couldn't load your meetings. Check your connection and reload the page."));
   if (!list.length) return h("div", { class: "panel" }, head,
     h("div", { class: "empty" },
       h("h3", {}, "No meetings yet"),
@@ -185,12 +203,12 @@ function viewList() {
       h("button", { class: "btn primary", type: "button", onclick: () => go("new") }, "Create the first meeting")));
   return h("div", { class: "panel" }, head,
     h("div", { class: "mlist" }, list.map(m => {
-      const first = m.dates[0], last = m.dates[m.dates.length - 1], n = (m.members || []).length;
+      const first = m.dates[0], last = m.dates[m.dates.length - 1], n = m.responses || 0;
       return h("button", { class: "mrow", type: "button", onclick: () => go("meeting", m.id) },
         h("span", { class: "t" }, m.title),
         h("span", { class: "small", style: "color:var(--accent);font-weight:700" }, m.createdBy === uid() ? "Yours" : ""),
         h("span", { class: "muted small" },
-          `${first === last ? fmtDate(first) : fmtDate(first) + " – " + fmtDate(last)} · ${fmtTime(m.startMin)}–${fmtTime(m.endMin)} · ${n} ${n === 1 ? "person" : "people"}`),
+          `${first === last ? fmtDate(first) : fmtDate(first) + " – " + fmtDate(last)} · ${fmtTime(m.startMin)}–${fmtTime(m.endMin)} · ${n} responded`),
         h("span"));
     })));
 }
@@ -243,16 +261,13 @@ function viewNew() {
     if (en <= s) { err.textContent = "Latest time must be after the earliest time."; return; }
     submit.disabled = true; submit.textContent = "Creating…";
     try {
-      const { F, db } = S.fb;
-      const ref = await F.addDoc(F.collection(db, "meetings"), {
-        title: title.value.trim(), note: note.value.trim(), dates: [...picked].sort(),
-        startMin: s, endMin: en, tz, createdBy: uid(), createdByName: S.user.displayName || "",
-        members: [uid()], createdAt: F.serverTimestamp(),
+      const ref = await api("POST", "/api/meetings", {
+        title: title.value.trim(), note: note.value.trim(), dates: [...picked].sort(), startMin: s, endMin: en, tz,
       });
       go("meeting", ref.id);
     } catch (e2) {
       submit.disabled = false; submit.textContent = "Create meeting";
-      err.textContent = "Couldn't create the meeting. Check your connection and try again.";
+      err.textContent = e2.status === 400 ? e2.message : "Couldn't create the meeting. Check your connection and try again.";
     }
   });
   return h("div", { class: "panel" }, h("h2", {}, "New meeting"), form);
@@ -279,8 +294,8 @@ function computeBest(m, spd, people) {
 function viewMeeting() {
   const m = S.cur;
   if (!m) return h("div", { class: "panel" },
-    h("h3", {}, S.curReady ? "This meeting isn't available" : "Loading meeting…"),
-    S.curReady ? h("p", { class: "muted" }, "The link may be wrong, or the person who created it deleted it.") : null,
+    h("h3", {}, S.curReady ? (S.loadError ? "Couldn't load this meeting" : "This meeting isn't available") : "Loading meeting…"),
+    S.curReady ? h("p", { class: "muted" }, S.loadError ? "Check your connection and reload the page." : "The link may be wrong, or the person who created it deleted it.") : null,
     h("button", { class: "btn", type: "button", onclick: () => go("list") }, "Back to your meetings"));
 
   const spd = (m.endMin - m.startMin) / SLOT;
@@ -320,7 +335,7 @@ function viewMeeting() {
     ask.addEventListener("click", () => {
       del.replaceChildren(h("span", { class: "small" }, "Delete for everyone?"),
         h("button", { class: "btn danger", type: "button", onclick: async () => {
-          try { await S.fb.F.deleteDoc(S.fb.F.doc(S.fb.db, "meetings", m.id)); go("list"); }
+          try { await api("DELETE", "/api/meetings/" + m.id); go("list"); }
           catch (e) { del.replaceChildren(h("span", { class: "err" }, "Couldn't delete. Try again.")); }
         } }, "Yes, delete"),
         h("button", { class: "btn", type: "button", onclick: () => render() }, "Keep it"));

@@ -4,21 +4,44 @@ Find a meeting time that works for everyone. Create a meeting, pick the dates an
 
 **Live site:** https://nwm1997-blip.github.io/common-time-finder/
 
-## Setup (one time)
+## How it fits together
 
-1. Create a free project at https://console.firebase.google.com/
-2. **Authentication** → Get started → enable **Google**. Under *Settings → Authorised domains*, add `nwm1997-blip.github.io`.
-3. **Firestore Database** → Create database (production mode). Open the *Rules* tab, paste the contents of [`firestore.rules`](firestore.rules), and publish.
-4. **Project settings** → *Your apps* → add a **Web** app. Copy the `firebaseConfig` object into [`firebase-config.js`](firebase-config.js), commit and push.
+| Part | Where | What it does |
+|---|---|---|
+| Website | GitHub Pages (`index.html`, `style.css`, `app.js`) | The app UI. No build step. |
+| Sign-in | Firebase Authentication (project `common-time-finder`) | Google sign-in. The browser gets an ID token. |
+| API | Cloudflare Worker (`worker/`) at `https://common-time-finder-api.nwm1997.workers.dev` | Verifies the Firebase ID token on every request, then reads and writes the database. |
+| Database | Cloudflare D1 (SQLite), database `common-time-finder` | Tables `meetings` and `availability` (see `worker/schema.sql`). |
 
-The Firebase web config is a public identifier, not a secret. Access is enforced by `firestore.rules`:
-- Anyone signed in with the link can open a meeting.
-- Each person can only write their own availability.
-- Only the creator can edit or delete a meeting.
-- Your meeting list shows only meetings you created or replied to.
+The meeting page checks for new responses every 12 seconds.
 
-## Files
+### Access rules (enforced in the Worker)
+- You must be signed in for every request.
+- Anyone signed in with a meeting link can view it.
+- Each person can only save their own availability.
+- Only the creator can delete a meeting.
+- Your meeting list shows meetings you created or replied to.
 
-- `index.html`, `style.css`, `app.js`: the app (no build step)
-- `firebase-config.js`: your Firebase project config
-- `firestore.rules`: database security rules
+## API
+
+All routes need `Authorization: Bearer <Firebase ID token>`.
+
+| Method | Path | Body |
+|---|---|---|
+| GET | `/api/meetings` | – (your meetings) |
+| POST | `/api/meetings` | `{title, note, dates[], startMin, endMin, tz}` |
+| GET | `/api/meetings/:id` | – (meeting + everyone's availability) |
+| PUT | `/api/meetings/:id/availability` | `{slots[]}` |
+| DELETE | `/api/meetings/:id` | – (creator only) |
+
+## Working on the API
+
+```sh
+cd worker
+npx wrangler login                     # once
+npx wrangler deploy                    # deploy changes
+npx wrangler d1 execute common-time-finder --remote --command "SELECT COUNT(*) FROM meetings"
+npx wrangler d1 export common-time-finder --remote --output backup.sql   # back up the data
+```
+
+To allow another site origin to call the API, add it to `ALLOWED_ORIGINS` in `worker/wrangler.toml` and redeploy.

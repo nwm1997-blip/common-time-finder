@@ -1,2 +1,4 @@
 firebase-debug.log
 .firebase/
+worker/node_modules/
+worker/.wrangler/

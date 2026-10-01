@@ -29,7 +29,7 @@ const S = {
   fb: null, user: null, authReady: false,
   meetings: [], meetingsReady: false,
   cur: null, curReady: false, avail: {},
-  view: "list", current: null, sel: null, minLen: 60, saveState: "", painting: false,
+  view: "list", current: null, sel: null, cursor: { mine: 0, group: 0 }, minLen: 60, saveState: "", painting: false,
 };
 let pollTimer = null;
 const POLL_MS = 12000;
@@ -39,7 +39,7 @@ function routeFromHash() {
   const mid = (location.hash.match(/^#m-([A-Za-z0-9_-]+)$/) || [])[1];
   const view = mid ? "meeting" : location.hash === "#new" ? "new" : "list";
   if (view === S.view && mid === (S.current || undefined) && S.loadedFor === S.user?.uid) return;
-  S.view = view; S.current = mid || null; S.sel = null; S.saveState = "";
+  S.view = view; S.current = mid || null; S.sel = null; S.cursor = { mine: 0, group: 0 }; S.saveState = "";
   load();
   render(true); window.scrollTo(0, 0);
 }
@@ -131,9 +131,15 @@ const mySlots = () => new Set(S.avail[uid()]?.slots || []);
 const participants = () => Object.entries(S.avail).filter(([, v]) => v.slots?.length).map(([id]) => id);
 const nameOf = id => id === uid() ? "You" : (S.avail[id]?.name || "Someone");
 
-async function saveMine(set) {
-  const m = S.cur, slots = [...set].sort((a, b) => a - b);
+function setMine(set) {
+  const slots = [...set].sort((a, b) => a - b);
   S.avail = { ...S.avail, [uid()]: { userId: uid(), name: S.user.displayName || "", photo: S.user.photoURL || "", slots } };
+  return slots;
+}
+async function saveMine(set, m = S.cur) {
+  clearTimeout(saveTimer); saveTimer = null;
+  // A queued save can fire after the user has opened another meeting; don't touch that meeting's state.
+  const slots = m === S.cur ? setMine(set) : [...set].sort((a, b) => a - b);
   S.saving = true; S.saveState = "Saving…"; paintSaved();
   try {
     await api("PUT", `/api/meetings/${m.id}/availability`, { slots });
@@ -143,6 +149,15 @@ async function saveMine(set) {
   }
   S.saving = false;
   paintSaved();
+}
+// Keyboard toggles update the screen at once and save after a short pause, so a run of key presses is one request.
+let saveTimer = null;
+function queueSave(set) {
+  const m = S.cur;
+  setMine(set);
+  clearTimeout(saveTimer);
+  S.saving = true; S.saveState = "Saving…"; paintSaved();
+  saveTimer = setTimeout(() => saveMine(set, m), 600);
 }
 function paintSaved() { const el = $("saved"); if (el) el.textContent = S.saveState; }
 
@@ -159,12 +174,16 @@ function render(force) {
   if (S.painting) return;
   const main = $("main");
   if (!force && S.view === "new" && main.querySelector("form")) return;
+  // Re-rendering replaces the grids, so put keyboard focus back on the same cell.
+  const f = document.activeElement?.closest?.(".grid .c");
+  const keep = f && main.contains(f) ? `.grid.${f.closest(".grid").dataset.kind} .c[data-i="${f.dataset.i}"]` : null;
   main.replaceChildren(
     !S.authReady ? h("div", { class: "panel" }, h("p", { class: "muted" }, "Loading…"))
     : !S.user ? viewSignIn()
     : S.view === "new" ? viewNew()
     : S.view === "meeting" ? viewMeeting()
     : viewList());
+  if (keep) main.querySelector(keep)?.focus();
 }
 
 function renderSetup() {
@@ -343,7 +362,7 @@ function viewMeeting() {
     del.append(ask);
   }
 
-  const detail = h("div", { class: "detail", id: "detail" }, h("span", { class: "muted" }, "Tap a cell in the group grid to see who's free then."));
+  const detail = h("div", { class: "detail", id: "detail", "aria-live": "polite" }, h("span", { class: "muted" }, "Select a time in the group grid to see who's free then."));
   const mine = buildGrid(m, spd, "mine", who, n, detail);
   const group = buildGrid(m, spd, "group", who, n, detail);
   if (S.sel != null) showDetail(m, spd, who, people, detail);
@@ -370,7 +389,7 @@ function viewMeeting() {
       h("section", { class: "panel", style: "border-color:var(--mine)" },
         h("div", { class: "row", style: "justify-content:space-between;align-items:center" },
           h("h3", {}, "Your availability"), h("span", { class: "saved", id: "saved", "aria-live": "polite" }, S.saveState)),
-        h("p", { class: "muted small" }, "Click or drag across the times you're free. Drag again to clear."),
+        h("p", { class: "muted small", id: "mine-hint" }, "Click or drag across the times you're free. Drag again to clear. With a keyboard, use the arrow keys to move, Space to mark or clear a time, and Shift + arrow to fill as you go."),
         h("div", { class: "gridwrap" }, mine)),
       h("section", { class: "panel" },
         h("h3", {}, "Everyone"), heatLegend,
@@ -379,26 +398,34 @@ function viewMeeting() {
 
 function buildGrid(m, spd, kind, who, n, detail) {
   const cols = m.dates.length;
-  const g = h("div", { class: "grid " + kind, style: `grid-template-columns: auto repeat(${cols}, minmax(46px, 1fr))` });
+  const g = h("div", { class: "grid " + kind, "data-kind": kind, role: "group",
+    "aria-label": kind === "mine" ? "Your availability" : "Everyone's availability",
+    "aria-describedby": kind === "mine" ? "mine-hint" : null,
+    style: `grid-template-columns: auto repeat(${cols}, minmax(46px, 1fr))` });
   g.append(h("span"));
   m.dates.forEach(d => { const dt = parseYmd(d); g.append(h("span", { class: "hd" }, dt.toLocaleDateString("en-SG", { weekday: "short" }), h("b", {}, dt.getDate() + " " + dt.toLocaleDateString("en-SG", { month: "short" })))); });
   const mineSet = mySlots();
+  const cursor = Math.min(S.cursor[kind], cols * spd - 1);
   for (let s = 0; s < spd; s++) {
     const t = m.startMin + s * SLOT;
     g.append(h("span", { class: "tm" }, t % 60 === 0 ? fmtTime(t) : ""));
     for (let di = 0; di < cols; di++) {
       const i = di * spd + s;
       const cls = ["c", (t + SLOT) % 60 === 0 ? "hr" : "", di === 0 ? "first" : "", s === 0 ? "top" : ""];
-      let style = null;
-      if (kind === "mine") { if (mineSet.has(i)) cls.push("on"); }
+      const when = `${fmtDate(m.dates[di])}, ${fmtTime(t)} – ${fmtTime(t + SLOT)}`;
+      let style = null, label = when, pressed = null;
+      if (kind === "mine") { pressed = String(mineSet.has(i)); if (mineSet.has(i)) cls.push("on"); }
       else {
         const c = who[i].length;
         if (c) style = `background:rgba(var(--heat-rgb),${(0.18 + 0.82 * c / Math.max(n, 1)).toFixed(2)})`;
         if (S.sel === i) cls.push("sel");
+        label = `${when}: ${c} of ${n} free`;
       }
-      g.append(h("span", { class: cls.join(" "), "data-i": i, style, title: `${fmtDate(m.dates[di])} ${fmtTime(t)}${kind === "group" ? ` · ${who[i].length} free` : ""}` }));
+      g.append(h("button", { type: "button", class: cls.join(" "), "data-i": i, style, tabindex: i === cursor ? "0" : "-1",
+        "aria-label": label, "aria-pressed": pressed, title: `${fmtDate(m.dates[di])} ${fmtTime(t)}${kind === "group" ? ` · ${who[i].length} free` : ""}` }));
     }
   }
+  wireKeys(g, kind, spd, cols * spd);
   if (kind === "mine") wirePaint(g);
   else g.addEventListener("click", e => {
     const c = e.target.closest(".c"); if (!c) return;
@@ -416,6 +443,44 @@ function showDetail(m, spd, who, people, el) {
     h("p", { style: "margin:0 0 4px;font-weight:700" }, `${fmtDate(m.dates[di])}, ${fmtTime(t)} – ${fmtTime(t + SLOT)}`),
     h("p", { style: "margin:0" }, h("span", { style: "color:var(--accent);font-weight:700" }, `Free (${yes.length}): `), yes.map(nameOf).join(", ") || "No one"),
     no.length ? h("p", { style: "margin:0" }, h("span", { class: "muted", style: "font-weight:700" }, `Busy (${no.length}): `), no.map(nameOf).join(", ")) : null);
+}
+
+// Roving tabindex: each grid is one Tab stop and the arrow keys move between cells.
+// Up/Down step through a day's times, Left/Right move between days, Home/End jump to a day's first/last time.
+function wireKeys(g, kind, spd, total) {
+  g.addEventListener("focusin", e => {
+    const c = e.target.closest(".c"); if (!c) return;
+    const prev = g.querySelector('.c[tabindex="0"]');
+    if (prev && prev !== c) prev.tabIndex = -1;
+    c.tabIndex = 0; S.cursor[kind] = +c.dataset.i;
+  });
+  g.addEventListener("keydown", e => {
+    const c = e.target.closest(".c"); if (!c || e.altKey || e.ctrlKey || e.metaKey) return;
+    const i = +c.dataset.i, s = i % spd;
+    const to = { ArrowUp: s > 0 ? i - 1 : i, ArrowDown: s < spd - 1 ? i + 1 : i,
+      ArrowLeft: i >= spd ? i - spd : i, ArrowRight: i + spd < total ? i + spd : i,
+      Home: i - s, End: i - s + spd - 1 }[e.key];
+    if (to != null) {
+      e.preventDefault();
+      if (to === i) return;
+      const next = g.querySelector(`.c[data-i="${to}"]`);
+      next.focus();
+      // Shift + arrow carries the current cell's state onto the next one, like dragging.
+      if (kind === "mine" && e.shiftKey && e.key.startsWith("Arrow")) {
+        const set = mySlots();
+        if (set.has(i) !== set.has(to)) toggleMine(to, set);
+      }
+    } else if (kind === "mine" && (e.key === " " || e.key === "Enter")) {
+      e.preventDefault();
+      toggleMine(i, mySlots());
+    }
+  });
+}
+
+function toggleMine(i, set) {
+  set.has(i) ? set.delete(i) : set.add(i);
+  queueSave(set);
+  render();
 }
 
 function wirePaint(g) {

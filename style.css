@@ -102,13 +102,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .grid { display: grid; gap: 0; user-select: none; -webkit-user-select: none; touch-action: none; width: max-content; min-width: 100%; }
 .grid .hd { font-size: 11.5px; text-align: center; padding: 0 2px 6px; line-height: 1.2; }
 .grid .hd b { display: block; font-size: 13px; }
-.grid .tm { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-align: right; padding-right: 6px; transform: translateY(-7px); white-space: nowrap; position: sticky; left: 0; background: var(--surface); }
-.grid .c { height: 20px; min-width: 46px; border-right: 1px solid var(--line); border-bottom: 1px dashed var(--line); background: var(--heat-0); cursor: pointer; }
+.grid .tm { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-align: right; padding-right: 6px; transform: translateY(-7px); white-space: nowrap; position: sticky; left: 0; z-index: 2; background: var(--surface); }
+.grid .c { appearance: none; display: block; margin: 0; padding: 0; font: inherit; color: inherit; border: 0; border-radius: 0; height: 20px; min-width: 46px; border-right: 1px solid var(--line); border-bottom: 1px dashed var(--line); background: var(--heat-0); cursor: pointer; }
 .grid .c.hr { border-bottom-style: solid; }
 .grid .c.first { border-left: 1px solid var(--line); }
 .grid .c.top { border-top: 1px solid var(--line); }
 .grid.mine .c.on { background: var(--mine); }
 .grid.group .c.sel { outline: 2px solid var(--fg); outline-offset: -2px; }
+.grid .c:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; position: relative; z-index: 1; }
 .legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .legend .sw { display: inline-flex; }
 .legend .sw span { width: 16px; height: 12px; }

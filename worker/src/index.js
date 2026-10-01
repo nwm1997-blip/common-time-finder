@@ -26,7 +26,7 @@ export default {
       let m;
 
       if (path === "/api/meetings" && req.method === "GET") return json(await listMeetings(env.DB, user.uid));
-      if (path === "/api/meetings" && req.method === "POST") return json(await createMeeting(env.DB, user, await req.json()), 201);
+      if (path === "/api/meetings" && req.method === "POST") return json(await createMeeting(env.DB, user, await readBody(req)), 201);
       if ((m = path.match(/^\/api\/meetings\/([A-Za-z0-9_-]{6,40})$/))) {
         if (req.method === "GET") {
           const r = await getMeeting(env.DB, m[1]);
@@ -35,7 +35,7 @@ export default {
         if (req.method === "DELETE") return deleteMeeting(env.DB, m[1], user.uid, json);
       }
       if ((m = path.match(/^\/api\/meetings\/([A-Za-z0-9_-]{6,40})\/availability$/)) && req.method === "PUT")
-        return saveAvailability(env.DB, m[1], user, await req.json(), json);
+        return saveAvailability(env.DB, m[1], user, await readBody(req), json);
 
       return json({ error: "Not found." }, 404);
     } catch (e) {
@@ -109,6 +109,12 @@ async function deleteMeeting(db, id, uid, json) {
 }
 
 // ---------- helpers ----------
+async function readBody(req) {
+  let b;
+  try { b = await req.json(); } catch { throw new BadRequest("Request body must be valid JSON."); }
+  if (b === null || typeof b !== "object" || Array.isArray(b)) throw new BadRequest("Request body must be a JSON object.");
+  return b;
+}
 const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 const int = v => (Number.isInteger(v) ? v : null);
 function newId() {

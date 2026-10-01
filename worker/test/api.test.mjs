@@ -146,3 +146,12 @@ test("auth: email fallback for name and JWKS caching", async () => {
   assert.equal(got.body.availability[0].name, "e@x.io");
   assert.ok(jwksCalls.n - before <= 1);
 });
+
+test("malformed or non-object bodies are 400, not 500", async () => {
+  const env = makeEnv();
+  const id = await create(env);
+  for (const raw of ["{oops", "", "null", "[]", "5"]) {
+    assert.equal((await call(env, "POST", "/api/meetings", { raw })).status, 400, raw);
+    assert.equal((await call(env, "PUT", `/api/meetings/${id}/availability`, { raw })).status, 400, raw);
+  }
+});

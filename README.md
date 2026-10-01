@@ -45,3 +45,11 @@ npx wrangler d1 export common-time-finder --remote --output backup.sql   # back 
 ```
 
 To allow another site origin to call the API, add it to `ALLOWED_ORIGINS` in `worker/wrangler.toml` and redeploy.
+
+### Tests
+
+The API tests need no installs (Node 22+). They run the Worker against an in-memory SQLite stand-in for D1 and sign test tokens with a throwaway key:
+
+```sh
+node --test --experimental-test-coverage "worker/test/*.test.mjs"
+```
